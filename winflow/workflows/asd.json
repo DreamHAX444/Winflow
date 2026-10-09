@@ -11,17 +11,12 @@
   "workflow": {
     "id": "workflow_1",
     "name": "New Workflow",
+    "description": "Generic sample. Its notification trigger is DISABLED and has no application/title/body criteria. Before enabling it, replace \"match_any\": true with a \"match\" object that names the notifications to react to (for example application, title, or body). Do not enable it while match_any is true: that would run this workflow on every notification.",
     "trigger": {
       "type": "windows_notification",
-      "application": {
-        "contains": ""
-      },
-      "title": {
-        "contains": ""
-      },
-      "body": {
-        "contains": ""
-      },
+      "enabled": false,
+      "match_any": true,
+      "description": "Disabled placeholder. Remove match_any and add match criteria before setting enabled to true.",
       "cooldown_seconds": 3.0
     },
     "loop": {

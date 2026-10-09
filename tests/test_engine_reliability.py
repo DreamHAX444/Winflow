@@ -377,7 +377,7 @@ class WindowsNotificationConcurrencyTests(unittest.TestCase):
     def test_notification_trigger_defers_admission_to_engine(self) -> None:
         source = MockNotificationSource()
         trigger = WindowsNotificationTrigger(
-            config={"while_running": "ignore"},
+            config={"while_running": "ignore", "match_any": True},
             source=source,
             emergency_stop=EmergencyStop(),
         )

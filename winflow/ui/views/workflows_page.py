@@ -21,16 +21,33 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from winflow.config.enablement import describe_enablement
 from winflow.config.loader import load_and_validate_config
+from winflow.config.writer import set_workflow_enabled
 from winflow.core.errors import ConfigurationError
 from winflow.ui.design_tokens import SPACING
+
+ENABLEMENT_NOTE = (
+    "The switch saves workflow.enabled to the workflow file. Status shows configuration "
+    "only; it does not show whether the workflow is running."
+)
 
 
 @dataclass
 class WorkflowEntry:
+    """A workflow file shown on the Workflows page.
+
+    ``enabled`` mirrors ``workflow.enabled`` in the file. ``eligible`` is the combined
+    rule (``workflow.enabled`` AND ``settings.enabled``). ``error`` is set when the file
+    cannot be read or validated, in which case the switch is disabled.
+    """
+
     name: str
     path: Path
     enabled: bool = False
+    eligible: bool = False
+    status: str = ""
+    error: str | None = None
 
 
 class _WorkflowRow(QWidget):
@@ -73,7 +90,6 @@ class WorkflowsPage(QWidget):
             else Path(__file__).resolve().parents[2] / "workflows"
         )
         self.entries: list[WorkflowEntry] = []
-        self._enabled_by_path: dict[Path, bool] = {}
         self._setup_ui()
         self.refresh_workflows()
 
@@ -130,6 +146,11 @@ class WorkflowsPage(QWidget):
         )
         self.workflow_list.setMinimumHeight(0)
         layout.addWidget(self.workflow_list)
+
+        self.enablement_note = QLabel(ENABLEMENT_NOTE)
+        self.enablement_note.setObjectName("workflowEnablementNote")
+        self.enablement_note.setWordWrap(True)
+        layout.addWidget(self.enablement_note)
 
         self.empty_state = QLabel("No workflows yet. Create one or open an existing file.")
         self.empty_state.setObjectName("emptyStateDescription")
@@ -193,11 +214,7 @@ class WorkflowsPage(QWidget):
             )
 
         for path in paths:
-            entry = WorkflowEntry(
-                path.stem,
-                path,
-                self._enabled_by_path.get(path, False),
-            )
+            entry = self._entry_from_file(path)
             self.entries.append(entry)
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, entry)
@@ -226,16 +243,21 @@ class WorkflowsPage(QWidget):
             detail = QLabel(self._display_path(entry.path))
             detail.setObjectName("workflowRowDetail")
             detail.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            status = QLabel(entry.status)
+            status.setObjectName("workflowRowStatus")
+            status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             text_column.addWidget(name)
             text_column.addWidget(detail)
+            text_column.addWidget(status)
             row_layout.addLayout(text_column, 1)
             toggle = QCheckBox("ON" if entry.enabled else "OFF")
             toggle.setObjectName("workflowEnabledToggle")
             toggle.setChecked(entry.enabled)
+            toggle.setEnabled(entry.error is None)
             toggle.setAccessibleName(f"Enable workflow {entry.name}")
             toggle.toggled.connect(
-                lambda enabled, workflow_entry=entry, workflow_item=item:
-                    self._set_entry_enabled(workflow_entry, workflow_item, enabled)
+                lambda enabled, workflow_entry=entry, workflow_item=item, switch=toggle:
+                    self._set_entry_enabled(workflow_entry, workflow_item, switch, enabled)
             )
             row_layout.addWidget(toggle)
             item.setSizeHint(row.sizeHint())
@@ -251,26 +273,75 @@ class WorkflowsPage(QWidget):
         self.workflow_list.setMaximumHeight(
             min(len(self.entries), 5) * 64 + 2 if self.entries else 0
         )
+        self.enablement_note.setVisible(bool(self.entries))
         self._update_selection_actions()
 
     @staticmethod
-    def _display_path(path: Path) -> str:
-        return f"{path.parent.name}  ·  {path.name}"
+    def _entry_from_file(path: Path) -> WorkflowEntry:
+        """Build a row from the file's effective configuration."""
+        try:
+            config = load_and_validate_config(path)
+        except ConfigurationError as exc:
+            return WorkflowEntry(
+                path.stem,
+                path,
+                enabled=False,
+                eligible=False,
+                status="Cannot read this file: fix it before changing enablement.",
+                error=str(exc),
+            )
+        workflow = config.get("workflow") if isinstance(config.get("workflow"), dict) else {}
+        name = str(workflow.get("name") or workflow.get("id") or path.stem)
+        status = describe_enablement(config)
+        return WorkflowEntry(
+            name,
+            path,
+            enabled=status.configured,
+            eligible=status.eligible,
+            status=status.reason,
+        )
 
     def _set_entry_enabled(
         self,
         entry: WorkflowEntry,
         item: QListWidgetItem,
-        enabled: bool,
+        toggle: QCheckBox,
+        requested: bool,
     ) -> None:
-        entry.enabled = enabled
-        self._enabled_by_path[entry.path] = enabled
-        self.workflow_list.setCurrentItem(item)
+        """Save ``workflow.enabled`` and update the row only after the save succeeds."""
+        try:
+            config = set_workflow_enabled(entry.path, requested)
+        except ConfigurationError as exc:
+            self._restore_toggle(toggle, entry.enabled)
+            QMessageBox.warning(
+                self,
+                "Enablement not saved",
+                f"Could not save the enabled setting for '{entry.name}'. "
+                f"The file was not changed.\n\n{exc}",
+            )
+            return
+        status = describe_enablement(config)
+        entry.enabled = status.configured
+        entry.eligible = status.eligible
+        entry.status = status.reason
+        toggle.setText("ON" if entry.enabled else "OFF")
         row = self.workflow_list.itemWidget(item)
         if row is not None:
-            toggle = row.findChild(QCheckBox, "workflowEnabledToggle")
-            if toggle is not None:
-                toggle.setText("ON" if enabled else "OFF")
+            status_label = row.findChild(QLabel, "workflowRowStatus")
+            if status_label is not None:
+                status_label.setText(entry.status)
+        self.workflow_list.setCurrentItem(item)
+
+    @staticmethod
+    def _restore_toggle(toggle: QCheckBox, previous: bool) -> None:
+        toggle.blockSignals(True)
+        toggle.setChecked(previous)
+        toggle.setText("ON" if previous else "OFF")
+        toggle.blockSignals(False)
+
+    @staticmethod
+    def _display_path(path: Path) -> str:
+        return f"{path.parent.name}  ·  {path.name}"
 
     def new_workflow(self) -> None:
         workflow_name = "New workflow"
@@ -316,31 +387,44 @@ class WorkflowsPage(QWidget):
             return
         self.workflow_open_requested.emit(config, path)
 
-    def update_workflow_entry(
-        self,
-        row: int,
-        config: dict[str, Any],
-        path: Path | None,
-    ) -> None:
-        if not 0 <= row < len(self.entries):
-            return
-        entry = self.entries[row]
-        if path is not None:
-            if entry.path in self._enabled_by_path:
-                self._enabled_by_path[path] = self._enabled_by_path.pop(entry.path)
-            entry.path = path
-        workflow = config.get("workflow", {})
+    def update_workflow_entry(self, config: dict[str, Any], path: Path) -> None:
+        """Refresh the row for ``path`` after a successful save.
+
+        Rows are matched by path, never by the selected row, so a save cannot land on
+        a different workflow. A saved path that is not listed triggers a rescan so a
+        newly created file in the workflow directory appears.
+        """
+        resolved = path.resolve()
+        for index, entry in enumerate(self.entries):
+            if entry.path == resolved:
+                self._refresh_row(index, config)
+                return
+        self.refresh_workflows()
+
+    def _refresh_row(self, index: int, config: dict[str, Any]) -> None:
+        entry = self.entries[index]
+        status = describe_enablement(config)
+        workflow = config.get("workflow") if isinstance(config.get("workflow"), dict) else {}
         entry.name = str(workflow.get("name") or workflow.get("id") or entry.path.stem)
-        item = self.workflow_list.item(row)
+        entry.enabled = status.configured
+        entry.eligible = status.eligible
+        entry.status = status.reason
+        entry.error = None
+        item = self.workflow_list.item(index)
         item.setData(Qt.ItemDataRole.UserRole, entry)
         row_widget = self.workflow_list.itemWidget(item)
-        if row_widget is not None:
-            name = row_widget.findChild(QLabel, "workflowRowName")
-            detail = row_widget.findChild(QLabel, "workflowRowDetail")
-            toggle = row_widget.findChild(QCheckBox, "workflowEnabledToggle")
-            if name is not None:
-                name.setText(entry.name)
-            if detail is not None:
-                detail.setText(self._display_path(entry.path))
-            if toggle is not None:
-                toggle.setAccessibleName(f"Enable workflow {entry.name}")
+        if row_widget is None:
+            return
+        name = row_widget.findChild(QLabel, "workflowRowName")
+        detail = row_widget.findChild(QLabel, "workflowRowDetail")
+        status_label = row_widget.findChild(QLabel, "workflowRowStatus")
+        toggle = row_widget.findChild(QCheckBox, "workflowEnabledToggle")
+        if name is not None:
+            name.setText(entry.name)
+        if detail is not None:
+            detail.setText(self._display_path(entry.path))
+        if status_label is not None:
+            status_label.setText(entry.status)
+        if toggle is not None:
+            self._restore_toggle(toggle, entry.enabled)
+            toggle.setAccessibleName(f"Enable workflow {entry.name}")

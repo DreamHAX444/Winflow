@@ -11,13 +11,14 @@ from collections.abc import Callable
 from typing import Any
 
 from winflow.core.emergency_stop import EmergencyStop, get_emergency_stop
+from winflow.core.errors import TriggerConfigurationError
 from winflow.core.execution_lock import DesktopExecutionLock, get_desktop_lock
 from winflow.core.logger import get_logger
 from winflow.triggers.base import BaseTrigger
 from winflow.triggers.cooldown import CooldownTracker
 from winflow.triggers.deduplication import Deduplicator
 from winflow.triggers.event import NotificationEvent
-from winflow.triggers.matcher import NotificationMatcher
+from winflow.triggers.matcher import validate_notification_trigger_config
 from winflow.triggers.sources import create_notification_source
 from winflow.triggers.sources.base import BaseNotificationSource
 
@@ -49,20 +50,10 @@ class WindowsNotificationTrigger(BaseTrigger):
         self.desktop_lock = desktop_lock or get_desktop_lock()
         self.emergency_stop = emergency_stop or get_emergency_stop()
 
-        # Accept the V1 configurator's legacy per-field `contains` criteria.
-        match_cfg = self.config.get("match")
-        if match_cfg is None:
-            match_cfg = {}
-            for field_name in ("application", "title", "body"):
-                criterion = self.config.get(field_name)
-                if isinstance(criterion, dict) and "contains" in criterion:
-                    match_cfg[field_name] = {
-                        "mode": "contains",
-                        "value": criterion["contains"],
-                    }
-                elif criterion is not None:
-                    match_cfg[field_name] = criterion
-        self.matcher = NotificationMatcher(config=match_cfg)
+        # Matching criteria are validated here (not just at config load) so that a
+        # trigger built without validation cannot run as an accidental match-all.
+        # Raises TriggerConfigurationError for empty or legacy/unsupported criteria.
+        self.matcher = validate_notification_trigger_config(self.config)
 
         # Parse deduplication config
         dedupe_cfg = self.config.get("deduplication", {})
@@ -81,21 +72,22 @@ class WindowsNotificationTrigger(BaseTrigger):
         cooldown_sec = float(self.config.get("cooldown_seconds", 0.0))
         self.cooldown_tracker = CooldownTracker(cooldown_seconds=cooldown_sec)
 
-        # Concurrent trigger policy: "ignore" (default), "queue", "restart"
-        legacy_policies = {
-            "terminate_and_restart": "queue",
-            "run_concurrently": "queue",
-        }
-        self.while_running_policy = legacy_policies.get(
-            str(self.config.get("while_running", self.config.get("while_running_policy", "ignore"))).lower().strip(),
-            str(self.config.get("while_running", self.config.get("while_running_policy", "ignore"))).lower().strip(),
-        )
-        if self.while_running_policy not in ("ignore", "queue", "restart"):
-            self.logger.warning(
-                "Unrecognized while_running policy '%s', falling back to 'ignore'.",
-                self.while_running_policy,
+        # Concurrent trigger policy: "ignore" (default), "queue", "restart".
+        # Unsupported policies are rejected rather than mapped to another policy.
+        requested_policy = str(
+            self.config.get("while_running", self.config.get("while_running_policy", "ignore"))
+        ).lower().strip()
+        if requested_policy in ("terminate_and_restart", "run_concurrently"):
+            raise TriggerConfigurationError(
+                f"while_running '{requested_policy}' is not supported yet; "
+                "use 'ignore', 'queue', or 'restart'."
             )
-            self.while_running_policy = "ignore"
+        if requested_policy not in ("ignore", "queue", "restart"):
+            raise TriggerConfigurationError(
+                f"Unrecognized while_running policy '{requested_policy}'; "
+                "use 'ignore', 'queue', or 'restart'."
+            )
+        self.while_running_policy = requested_policy
 
         # Initialize event source
         self._source = source or create_notification_source(

@@ -14,6 +14,7 @@ from winflow.core.emergency_stop import EmergencyStop, get_emergency_stop
 from winflow.core.errors import (
     ActionExecutionError,
     ActionNotFoundError,
+    ConfigurationError,
     EmergencyStopTriggered,
     VerificationFailedError,
     VerificationNotFoundError,
@@ -33,6 +34,8 @@ from winflow.core.timeout import execute_with_timeout
 from winflow.core.variables import VariableResolver
 from winflow.actions.wait import WaitAction
 from winflow.engine.action_registry import ActionRegistry, get_action_registry
+from winflow.config.initial_variables import config_variables
+from winflow.config.step_aliases import action_params_from_step, canonical_step
 from winflow.engine.execution_context import ExecutionContext
 from winflow.engine.verification_registry import (
     VerificationRegistry,
@@ -101,14 +104,31 @@ class WorkflowRunner:
         failure_raw = step_def.get("failure") or settings.get("failure") or {}
         retry_raw = step_def.get("retry") or settings.get("retry") or {}
 
+        # settings.retry_attempts is the workflow-level fallback for retries: the
+        # number of retries after the first attempt. It is used only when the step
+        # (or settings.retry/failure) does not declare its own attempts.
+        workflow_retries = settings.get("retry_attempts")
+        if workflow_retries is not None:
+            if isinstance(workflow_retries, bool) or not isinstance(workflow_retries, int) or workflow_retries < 0:
+                raise WorkflowExecutionError(
+                    "'settings.retry_attempts' must be a non-negative integer."
+                )
+
         policy = str(failure_raw.get("policy", "")).lower()
-        if not policy and retry_raw:
+        if not policy and (retry_raw or workflow_retries):
             policy = FailurePolicy.RETRY
 
         if not policy:
             policy = FailurePolicy.STOP
 
-        attempts = int(retry_raw.get("attempts", failure_raw.get("attempts", 1)))
+        if "attempts" in retry_raw:
+            attempts = int(retry_raw["attempts"])
+        elif "attempts" in failure_raw:
+            attempts = int(failure_raw["attempts"])
+        elif workflow_retries is not None:
+            attempts = workflow_retries + 1
+        else:
+            attempts = 1
         delay_seconds = float(
             retry_raw.get(
                 "delay_seconds",
@@ -134,10 +154,18 @@ class WorkflowRunner:
     def run(self, context: ExecutionContext | None = None) -> ExecutionContext:
         """Execute the workflow sequence."""
         workflow_id = self.config.get("workflow", {}).get("id", "unknown_workflow")
-        ctx = context or ExecutionContext(
-            workflow_id=workflow_id,
-            emergency_stop=self.emergency_stop,
-        )
+        config_defaults = config_variables(self.config)
+        if context is None:
+            ctx = ExecutionContext(
+                workflow_id=workflow_id,
+                emergency_stop=self.emergency_stop,
+                variables=config_defaults,
+            )
+        else:
+            ctx = context
+            # Caller-supplied values take precedence; config fills only missing names.
+            for name, value in config_defaults.items():
+                ctx.variables.setdefault(name, value)
 
         wf = self.config.get("workflow", {})
         settings = self.config.get("settings", {})
@@ -275,6 +303,10 @@ class WorkflowRunner:
                 raise WorkflowExecutionError(
                     f"Step {step_index} must have a non-empty action name."
                 )
+            try:
+                step_def = canonical_step(step_def, path=f"Step {step_index}")
+            except ConfigurationError as exc:
+                raise WorkflowExecutionError(str(exc)) from exc
             ctx.current_action = action_name
 
             # Control structures
@@ -379,12 +411,10 @@ class WorkflowRunner:
                 continue
 
             # Standard actions
-            raw_params = step_def.get("params", {}).copy()
-            _reserved = {"action", "params", "verify", "retry", "failure", "timeout_seconds", "condition", "then", "else", "steps", "do", "items", "max_iterations", "max_items", "description"}
-            for k, v in step_def.items():
-                if k not in _reserved and k not in raw_params:
-                    raw_params[k] = v
-                    
+            # Explicit params win; other top-level keys are legacy params unless
+            # they are structural or metadata keys (name, step_id, label, ...).
+            raw_params = action_params_from_step(step_def)
+
             # Variable interpolation
             params = VariableResolver.resolve(raw_params, ctx)
             verify_def_raw = step_def.get("verify")
