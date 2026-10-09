@@ -168,7 +168,15 @@ class TypeAction(BaseAction):
 
         _focus_target_if_requested(self.backend, opts)
         _register_keyboard_cleanup(context, self.backend.keyboard)
-        self.backend.keyboard.type_text(text, interval_ms=interval_ms)
+        cancellable_type = getattr(self.backend.keyboard, "type_text_cancellable", None)
+        if callable(cancellable_type):
+            cancellable_type(
+                text,
+                interval_ms=interval_ms,
+                cancel_check=context.check_cancellation,
+            )
+        else:
+            self.backend.keyboard.type_text(text, interval_ms=interval_ms)
         context.check_cancellation()
         # Avoid exposing raw text in logs/return if sensitive
         return {"action": "type", "length": len(text)}

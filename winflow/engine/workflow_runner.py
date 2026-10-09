@@ -140,6 +140,15 @@ class WorkflowRunner:
         )
 
         wf = self.config.get("workflow", {})
+        settings = self.config.get("settings", {})
+        if not isinstance(wf, dict) or not isinstance(settings, dict):
+            raise WorkflowExecutionError("'workflow' and 'settings' must be objects.")
+        for path, block in (("workflow.enabled", wf), ("settings.enabled", settings)):
+            if "enabled" in block and not isinstance(block["enabled"], bool):
+                raise WorkflowExecutionError(f"'{path}' must be a boolean.")
+        if not wf.get("enabled", True) or not settings.get("enabled", True):
+            raise WorkflowExecutionError(f"Workflow '{workflow_id}' is disabled.")
+
         steps = wf.get("steps", self.config.get("steps", []))
         repeat_count, repeat_delay, has_repeat_config = self._workflow_repeat_config(
             self.config, wf
@@ -151,20 +160,22 @@ class WorkflowRunner:
             self.desktop_lock.acquire(owner=ctx.execution_id, timeout=lock_timeout)
             lock_acquired = True
 
-        if self.history_storage:
-            self.history_storage.record_start(
-                execution_id=ctx.execution_id,
-                workflow_id=workflow_id,
-                start_time=ctx.start_time,
+        try:
+            # Include history/log initialization in the protected region so a
+            # startup failure cannot strand the desktop lock.
+            if self.history_storage:
+                self.history_storage.record_start(
+                    execution_id=ctx.execution_id,
+                    workflow_id=workflow_id,
+                    start_time=ctx.start_time,
+                )
+
+            log_step_event(
+                self.logger, execution_id=ctx.execution_id,
+                workflow_id=workflow_id, step=0,
+                action="workflow_start", status="STARTED",
             )
 
-        log_step_event(
-            self.logger, execution_id=ctx.execution_id,
-            workflow_id=workflow_id, step=0,
-            action="workflow_start", status="STARTED",
-        )
-
-        try:
             previous_iteration = ctx.loop_iteration
             try:
                 for iteration in range(repeat_count):
@@ -379,12 +390,21 @@ class WorkflowRunner:
             verify_def_raw = step_def.get("verify")
             verify_def = VariableResolver.resolve(verify_def_raw, ctx) if verify_def_raw else None
             
-            timeout_seconds = float(
-                step_def.get(
-                    "timeout_seconds",
-                    self.config.get("settings", {}).get("timeout_seconds", 0.0),
-                )
+            settings = self.config.get("settings", {})
+            default_timeout = settings.get(
+                "timeout_seconds",
+                settings.get("global_timeout_seconds", 0.0),
             )
+            try:
+                timeout_seconds = float(step_def.get("timeout_seconds", default_timeout))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise WorkflowExecutionError(
+                    f"Timeout for action '{action_name}' must be a finite non-negative number."
+                ) from exc
+            if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+                raise WorkflowExecutionError(
+                    f"Timeout for action '{action_name}' must be a finite non-negative number."
+                )
 
             failure_cfg, retry_cfg = self._resolve_failure_and_retry_config(step_def)
 
