@@ -8,6 +8,82 @@ from typing import Any
 SCHEMA_VERSION: str = "1.0"
 SUPPORTED_SCHEMA_VERSIONS = {SCHEMA_VERSION}
 
+# Shared schedule/trigger field shapes. Runtime validation (validator.py,
+# triggers/schedule.py, triggers/matcher.py) is authoritative; these patterns are
+# intentionally no stricter than the runtime, which trims whitespace and treats
+# blank values as "not entered".
+_TIME_OF_DAY_SCHEMA: dict[str, Any] = {
+    "oneOf": [
+        {"type": "string", "pattern": r"^\s*(\d{1,2}:\d{2})?\s*$"},
+        {"type": "integer", "minimum": 0, "maximum": 23, "description": "Legacy integer hour; 14 means 14:00."},
+    ],
+}
+_WEEKDAY_ITEM_SCHEMA: dict[str, Any] = {
+    "oneOf": [
+        {"type": "string"},
+        {"type": "integer", "minimum": 0, "maximum": 6},
+    ],
+}
+_WEEKDAYS_SCHEMA: dict[str, Any] = {
+    "oneOf": [
+        {"type": "string"},
+        {"type": "integer", "minimum": 0, "maximum": 6},
+        {"type": "array", "items": _WEEKDAY_ITEM_SCHEMA},
+    ],
+}
+_DATE_SCHEMA: dict[str, Any] = {"type": "string", "pattern": r"^\s*(\d{4}-\d{2}-\d{2})?\s*$"}
+_DATETIME_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "pattern": r"^\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?)?\s*$",
+}
+_SCHEDULE_FIELDS_SCHEMA: dict[str, Any] = {
+    "time": _TIME_OF_DAY_SCHEMA,
+    "at": _TIME_OF_DAY_SCHEMA,
+    "date": _DATE_SCHEMA,
+    "day": _DATE_SCHEMA,
+    "datetime": _DATETIME_SCHEMA,
+    "date_time": _DATETIME_SCHEMA,
+    "days": _WEEKDAYS_SCHEMA,
+    "weekdays": _WEEKDAYS_SCHEMA,
+}
+
+# Used for both root-level "trigger" and "workflow.trigger" so both forms receive
+# identical structural checks.
+TRIGGER_BLOCK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "enabled": {"type": "boolean"},
+        "config": {
+            "type": "object",
+            "description": "Legacy nested schedule fields; equivalent to the top-level fields.",
+            "properties": dict(_SCHEDULE_FIELDS_SCHEMA),
+            "additionalProperties": True,
+        },
+        **_SCHEDULE_FIELDS_SCHEMA,
+        "match": {"type": "object"},
+        "match_any": {
+            "type": "boolean",
+            "description": "Explicit opt-in to match every notification. Required when no match criteria are given.",
+        },
+        "case_sensitive": {
+            "not": {},
+            "description": "Not supported at the top level; set match.case_sensitive instead.",
+        },
+        "deduplication": {"oneOf": [{"type": "boolean"}, {"type": "object"}]},
+        "cooldown_seconds": {"type": "number", "minimum": 0},
+        "while_running": {
+            "type": "string",
+            "enum": ["ignore", "queue", "restart"],
+        },
+        "while_running_policy": {
+            "type": "string",
+            "enum": ["ignore", "queue", "restart"],
+        },
+    },
+    "additionalProperties": True,
+}
+
 # JSON Schema definition for validation
 WINFLOW_CONFIG_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -35,42 +111,7 @@ WINFLOW_CONFIG_SCHEMA: dict[str, Any] = {
                     },
                     "additionalProperties": True,
                 },
-                "trigger": {
-                    "type": "object",
-                    "properties": {
-                        "type": {"type": "string", "minLength": 1},
-                        "match": {"type": "object"},
-                        "deduplication": {
-                            "oneOf": [
-                                {"type": "boolean"},
-                                {"type": "object"},
-                            ]
-                        },
-                        "cooldown_seconds": {"type": "number", "minimum": 0},
-                        "while_running": {
-                            "type": "string",
-                            "enum": [
-                                "ignore",
-                                "queue",
-                                "restart",
-                                "terminate_and_restart",
-                                "run_concurrently",
-                            ],
-                        },
-                        "while_running_policy": {
-                            "type": "string",
-                            "enum": [
-                                "ignore",
-                                "queue",
-                                "restart",
-                                "terminate_and_restart",
-                                "run_concurrently",
-                            ],
-                        },
-                        "enabled": {"type": "boolean"},
-                    },
-                    "additionalProperties": True,
-                },
+                "trigger": TRIGGER_BLOCK_SCHEMA,
                 "steps": {
                     "type": "array",
                     "minItems": 1,
@@ -126,43 +167,7 @@ WINFLOW_CONFIG_SCHEMA: dict[str, Any] = {
             },
             "additionalProperties": True,
         },
-        "trigger": {
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "minLength": 1},
-                "config": {"type": "object"},
-                "match": {"type": "object"},
-                "deduplication": {
-                    "oneOf": [
-                        {"type": "boolean"},
-                        {"type": "object"},
-                    ]
-                },
-                "cooldown_seconds": {"type": "number", "minimum": 0},
-                "while_running": {
-                    "type": "string",
-                    "enum": [
-                        "ignore",
-                        "queue",
-                        "restart",
-                        "terminate_and_restart",
-                        "run_concurrently",
-                    ],
-                },
-                "while_running_policy": {
-                    "type": "string",
-                    "enum": [
-                        "ignore",
-                        "queue",
-                        "restart",
-                        "terminate_and_restart",
-                        "run_concurrently",
-                    ],
-                },
-                "enabled": {"type": "boolean"},
-            },
-            "additionalProperties": True,
-        },
+        "trigger": TRIGGER_BLOCK_SCHEMA,
         "loop": {
             "type": "object",
             "properties": {

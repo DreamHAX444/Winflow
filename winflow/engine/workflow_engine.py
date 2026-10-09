@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from winflow.config.enablement import is_workflow_enabled
+from winflow.config.initial_variables import config_variables, initial_variables
 from winflow.config.loader import load_and_validate_config
 from winflow.core.emergency_hotkey import EmergencyStopHotkey, parse_emergency_hotkey
 from winflow.core.emergency_stop import EmergencyStop, get_emergency_stop
@@ -245,10 +247,17 @@ class WorkflowEngine:
         self._ensure_emergency_hotkey(settings)
 
         runner = self.create_runner(workflow_config)
-        ctx = context or ExecutionContext(
-            workflow_id=workflow_id,
-            emergency_stop=self.emergency_stop,
-        )
+        if context is None:
+            ctx = ExecutionContext(
+                workflow_id=workflow_id,
+                emergency_stop=self.emergency_stop,
+                variables=initial_variables(workflow_config),
+            )
+        else:
+            ctx = context
+            # Caller-supplied values take precedence; config fills only missing names.
+            for name, value in config_variables(workflow_config).items():
+                ctx.variables.setdefault(name, value)
         if isinstance(event_data, dict):
             ctx.trigger_event = dict(event_data)
         ctx.variables["manual_run"] = bool(manual)
@@ -275,18 +284,8 @@ class WorkflowEngine:
 
     @staticmethod
     def _workflow_is_enabled(workflow_config: dict[str, Any]) -> bool:
-        """Honor both the legacy settings flag and the workflow-level flag."""
-        workflow = workflow_config.get("workflow", {})
-        settings = workflow_config.get("settings", {})
-        if not isinstance(workflow, dict) or not isinstance(settings, dict):
-            raise ConfigurationError("'workflow' and 'settings' must be objects.")
-        for path, block, key in (
-            ("workflow.enabled", workflow, "enabled"),
-            ("settings.enabled", settings, "enabled"),
-        ):
-            if key in block and not isinstance(block[key], bool):
-                raise ConfigurationError(f"'{path}' must be a boolean.")
-        return workflow.get("enabled", True) and settings.get("enabled", True)
+        """Honor both the legacy settings flag and the workflow-level flag (shared rule)."""
+        return is_workflow_enabled(workflow_config)
 
     def _ensure_emergency_hotkey(self, settings: Any) -> None:
         """Start the configured application-wide emergency-stop hotkey once."""
@@ -383,10 +382,11 @@ class WorkflowEngine:
         policy = str(
             trigger_cfg.get("while_running", trigger_cfg.get("while_running_policy", "ignore"))
         ).strip().lower()
-        policy = {
-            "terminate_and_restart": "queue",
-            "run_concurrently": "queue",
-        }.get(policy, policy)
+        if policy in {"terminate_and_restart", "run_concurrently"}:
+            raise ConfigurationError(
+                f"Trigger while_running '{policy}' is not supported yet; "
+                "use 'ignore', 'queue', or 'restart'."
+            )
         if policy not in {"ignore", "queue", "restart"}:
             raise ConfigurationError(
                 "Trigger while_running must be 'ignore', 'queue', or 'restart'."
@@ -485,6 +485,7 @@ class WorkflowEngine:
         context = ExecutionContext(
             workflow_id=workflow.get("id", "unknown_workflow"),
             emergency_stop=self.emergency_stop,
+            variables=initial_variables(state.workflow_config),
         )
         context.trigger_event = dict(event_data)
         context.variables["manual_run"] = False

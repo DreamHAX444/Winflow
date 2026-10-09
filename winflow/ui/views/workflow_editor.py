@@ -34,7 +34,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from winflow.config.validator import validate_config
+from winflow.config.step_coordinates import (
+    COORDINATE_ACTIONS,
+    CURSOR_ACTIONS,
+    CURSOR_HELP_TEXT,
+    CoordinateError,
+    apply_coordinate_change,
+    check_coordinate_presence,
+    coordinate_change_for,
+)
+from winflow.config.trigger_form import TriggerFormError
+from winflow.config.trigger_location import CONFLICT, NESTED, resolve_trigger_location, write_trigger
+from winflow.config.writer import save_config
 from winflow.core.errors import ConfigurationError
 from winflow.engine.action_registry import get_action_registry
 from winflow.ui.design_tokens import CONTROL_WIDTH, SPACING, style_combo_box_popup
@@ -44,10 +55,12 @@ from winflow.ui.views.trigger_editor import TriggerEditor
 
 
 _ACTION_DEFAULTS: dict[str, dict[str, Any]] = {
-    "move": {"x": 0, "y": 0, "duration_ms": 0},
-    "click": {"x": 0, "y": 0, "button": "left", "clicks": 1, "interval_ms": 50},
-    "double_click": {"x": 0, "y": 0, "button": "left"},
-    "right_click": {"x": 0, "y": 0},
+    # Coordinates are intentionally absent: an omitted x/y means "current cursor" for
+    # click actions, and Move Mouse needs a point chosen with Pick Location or typed in.
+    "move": {"duration_ms": 0},
+    "click": {"button": "left", "clicks": 1, "interval_ms": 50},
+    "double_click": {"button": "left"},
+    "right_click": {},
     "scroll": {"amount": -1},
     "key": {"key": ""},
     "hotkey": {"keys": ["CTRL", "C"]},
@@ -140,12 +153,27 @@ class WorkflowSettingsDialog(QDialog):
         self.setObjectName("workflowSettingsDialog")
         self.resize(600, 500)
         self.config = config
+        self._location = resolve_trigger_location(config)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        self.trigger_editor = TriggerEditor(self.config.get("trigger", {}))
+        if self._location.kind == CONFLICT:
+            note_text = self._location.message
+        elif self._location.kind == NESTED:
+            note_text = "This trigger is stored under 'workflow.trigger'. Saving keeps it there."
+        else:
+            note_text = ""
+        self.trigger_note = QLabel(note_text)
+        self.trigger_note.setObjectName("triggerWarning")
+        self.trigger_note.setWordWrap(True)
+        self.trigger_note.setVisible(bool(note_text))
+        layout.addWidget(self.trigger_note)
+
+        self.trigger_editor = TriggerEditor(self._location.trigger)
+        if self._location.kind == CONFLICT:
+            self.trigger_editor.setEnabled(False)
         layout.addWidget(self.trigger_editor, 1)
 
         vars_group = QGroupBox("Variables (JSON)")
@@ -175,11 +203,14 @@ class WorkflowSettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     def accept(self) -> None:
-        try:
-            trigger_data = self.trigger_editor.get_config()
-        except json.JSONDecodeError as exc:
-            QMessageBox.warning(self, "Invalid Trigger JSON", f"Trigger configuration error:\n{exc}")
-            return
+        # Validate everything first; only then change the configuration.
+        new_trigger: dict[str, Any] | None = self._location.trigger
+        if self._location.kind != CONFLICT:
+            try:
+                new_trigger = self.trigger_editor.get_config()
+            except TriggerFormError as exc:
+                QMessageBox.warning(self, "Trigger not saved", str(exc))
+                return
 
         try:
             vars_text = self.variables_edit.toPlainText().strip()
@@ -192,10 +223,12 @@ class WorkflowSettingsDialog(QDialog):
             QMessageBox.warning(self, "Invalid Variables JSON", "Variables must be a JSON object.")
             return
 
-        if trigger_data:
-            self.config["trigger"] = trigger_data
-        else:
-            self.config.pop("trigger", None)
+        if self._location.kind != CONFLICT and new_trigger != self._location.trigger:
+            try:
+                write_trigger(self.config, new_trigger)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Trigger not saved", str(exc))
+                return
 
         if variables_data:
             self.config["variables"] = variables_data
@@ -232,6 +265,9 @@ class WorkflowEditor(QWidget):
         self._setting_picked_window = False
         self._current_action = ""
         self._dirty_fields: set[str] = set()
+        self._coordinate_editors: tuple[QLineEdit, QLineEdit] | None = None
+        self._saved_snapshot: str | None = None
+        self._last_error = ""
         self._location_picker = LocationPicker(self)
         self._location_picker.location_picked.connect(self._set_picked_location)
         self._window_picker = WindowPicker(self)
@@ -360,17 +396,39 @@ class WorkflowEditor(QWidget):
         self._steps = self._get_steps(self.config)
         self._selected_step = None
         self._refresh_step_list()
+        self._saved_snapshot = self._snapshot(self.config)
+
+    @staticmethod
+    def _snapshot(config: dict[str, Any] | None) -> str:
+        return json.dumps(config, sort_keys=True, ensure_ascii=False, default=str)
+
+    def has_unsaved_changes(self) -> bool:
+        """True when the editor differs from the last loaded or saved state.
+
+        Field edits are copied into the configuration first, the same way Save does.
+        If a field is invalid, the state is reported as unsaved so Back cannot discard it silently.
+        """
+        if self.config is None:
+            return False
+        if not self._store_visible_fields():
+            return True
+        return self._snapshot(self.config) != self._saved_snapshot
 
     @staticmethod
     def _get_steps(config: dict[str, Any]) -> list[dict[str, Any]]:
-        workflow = config.get("workflow", {})
-        steps = workflow.get("steps") if isinstance(workflow, dict) else None
-        if steps is None:
-            steps = config.get("steps", [])
-        if not isinstance(steps, list):
-            steps = []
-        if "steps" not in config:
-            config["steps"] = steps
+        """Return the live steps list, attached to the configuration it came from.
+
+        Steps are read from ``workflow.steps`` when present, otherwise from the root
+        ``steps``. A new list is attached to the root only when neither exists, so the
+        editor never duplicates steps into a second location.
+        """
+        workflow = config.get("workflow")
+        if isinstance(workflow, dict) and isinstance(workflow.get("steps"), list):
+            return workflow["steps"]
+        if isinstance(config.get("steps"), list):
+            return config["steps"]
+        steps: list[dict[str, Any]] = []
+        config["steps"] = steps
         return steps
 
     def _refresh_step_list(self, selected: int = 0) -> None:
@@ -404,7 +462,7 @@ class WorkflowEditor(QWidget):
             QMessageBox.warning(
                 self,
                 "Invalid value",
-                "A step property contains invalid JSON or a value of the wrong type.",
+                self._last_error or "A step property contains invalid JSON or a value of the wrong type.",
             )
             return
         self._selected_step = row
@@ -449,6 +507,7 @@ class WorkflowEditor(QWidget):
         self._target_modes.clear()
         self._target_present.clear()
         self._dirty_fields.clear()
+        self._coordinate_editors = None
 
         params = step.get("params", {})
         if not isinstance(params, dict):
@@ -482,9 +541,12 @@ class WorkflowEditor(QWidget):
             location_layout = QHBoxLayout(location_row)
             location_layout.setContentsMargins(0, 0, 0, 0)
             location_layout.setSpacing(SPACING["sm"])
+            coordinate_editors: list[QLineEdit] = []
             for key in ("x", "y"):
-                value = params.get(key, 0)
-                editor = self._make_value_editor(key, value)
+                # Blank means "not set". Coordinates are never shown as a placeholder 0.
+                raw_value = params.get(key)
+                editor = QLineEdit("" if raw_value is None else str(raw_value))
+                editor.setPlaceholderText("Current cursor" if action in CURSOR_ACTIONS else "Required")
                 editor.setFixedWidth(112)
                 editor.setObjectName(f"location{key.upper()}Field")
                 editor.setAccessibleName(f"Location {key.upper()}")
@@ -496,11 +558,20 @@ class WorkflowEditor(QWidget):
                 coordinate_layout.addWidget(label)
                 coordinate_layout.addWidget(editor)
                 location_layout.addWidget(coordinate)
-                self._parameter_widgets[key] = editor
-                self._parameter_types[key] = type(value)
                 self._track_parameter_editor(key, editor)
+                coordinate_editors.append(editor)
+            self._coordinate_editors = (coordinate_editors[0], coordinate_editors[1])
             location_layout.addStretch(1)
             form.addRow(self._field_label("Location"), location_row)
+
+            location_help = QLabel(
+                CURSOR_HELP_TEXT
+                if action in CURSOR_ACTIONS
+                else "Move Mouse needs both X and Y. Use Pick Location to choose a point."
+            )
+            location_help.setObjectName("helperText")
+            location_help.setWordWrap(True)
+            form.addRow("", location_help)
 
             self.pick_location_button = QPushButton("Pick Location")
             self.pick_location_button.setObjectName("secondaryButton")
@@ -615,14 +686,12 @@ class WorkflowEditor(QWidget):
         self._building_fields = False
 
     def _set_picked_location(self, x: int, y: int) -> None:
-        for key, value in (("x", x), ("y", y)):
-            editor = self._parameter_widgets.get(key)
-            if isinstance(editor, QSpinBox):
-                editor.setValue(value)
-                self._mark_dirty(f"param:{key}")
-            elif isinstance(editor, QDoubleSpinBox):
-                editor.setValue(value)
-                self._mark_dirty(f"param:{key}")
+        if self._coordinate_editors is None:
+            return
+        x_editor, y_editor = self._coordinate_editors
+        for key, editor, value in (("x", x_editor, x), ("y", y_editor, y)):
+            editor.setText(str(int(value)))
+            self._mark_dirty(f"param:{key}")
 
     @classmethod
     def _clear_layout(cls, layout: QLayout) -> None:
@@ -1128,8 +1197,11 @@ class WorkflowEditor(QWidget):
         }
 
         tab_form = self._make_advanced_form()
-        tab_status = QLabel("Not available yet")
+        tab_status = QLabel(
+            "Not available in this version. Target the window itself instead."
+        )
         tab_status.setObjectName("helperText")
+        tab_status.setWordWrap(True)
         tab_form.addRow(self._field_label("Tab targeting"), tab_status)
         details_layout.addLayout(tab_form)
         layout.addWidget(details_content)
@@ -1300,10 +1372,13 @@ class WorkflowEditor(QWidget):
             return True
         step = self._steps[self._selected_step]
         original_params = step.get("params", {})
+        self._last_error = ""
         try:
             updated_params = deepcopy(original_params) if isinstance(original_params, dict) else {}
             for key, editor in self._parameter_widgets.items():
                 dirty_key = f"param:{key}"
+                if self._coordinate_editors is not None and key in ("x", "y"):
+                    continue  # handled together below so a partial pair is refused
                 if key == "target":
                     if any(dirty.startswith("param:target:") for dirty in self._dirty_fields):
                         if "param:target:clear" in self._dirty_fields:
@@ -1339,6 +1414,15 @@ class WorkflowEditor(QWidget):
                 if isinstance(original_params, dict) and value == original_params.get(key):
                     continue
                 updated_params[key] = value
+            if self._coordinate_editors is not None:
+                action_name = str(step.get("action", ""))
+                if "param:x" in self._dirty_fields or "param:y" in self._dirty_fields:
+                    x_editor, y_editor = self._coordinate_editors
+                    change = coordinate_change_for(action_name, x_editor.text(), y_editor.text())
+                    apply_coordinate_change(updated_params, change)
+                else:
+                    check_coordinate_presence(action_name, updated_params)
+
             if updated_params != original_params and (
                 isinstance(original_params, dict) or updated_params
             ):
@@ -1363,7 +1447,11 @@ class WorkflowEditor(QWidget):
                 and timeout_editor.value() != step.get("timeout_seconds")
             ):
                 step["timeout_seconds"] = timeout_editor.value()
-        except (ValueError, json.JSONDecodeError):
+        except json.JSONDecodeError:
+            self._last_error = "A step property contains invalid JSON."
+            return False
+        except (ValueError, CoordinateError) as exc:
+            self._last_error = str(exc) or "A step property has the wrong type."
             return False
         self._refresh_selected_label()
         return True
@@ -1544,7 +1632,9 @@ class WorkflowEditor(QWidget):
         if not accepted:
             return
         if self._selected_step is not None and not self._store_visible_fields():
-            QMessageBox.warning(self, "Invalid value", "Fix the selected step values before adding another step.")
+            QMessageBox.warning(
+                self, "Invalid value", self._last_error or "Fix the selected step values before adding another step."
+            )
             return
         step = {
             "action": action,
@@ -1558,7 +1648,9 @@ class WorkflowEditor(QWidget):
         if index is None:
             return
         if not self._store_visible_fields():
-            QMessageBox.warning(self, "Invalid value", "Fix the selected step values before removing it.")
+            QMessageBox.warning(
+                self, "Invalid value", self._last_error or "Fix the selected step values before removing it."
+            )
             return
         del self._steps[index]
         self._refresh_step_list(min(index, len(self._steps) - 1))
@@ -1569,26 +1661,28 @@ class WorkflowEditor(QWidget):
         if index is None or not 0 <= target < len(self._steps):
             return
         if not self._store_visible_fields():
-            QMessageBox.warning(self, "Invalid value", "Fix the selected step values before moving it.")
+            QMessageBox.warning(
+                self, "Invalid value", self._last_error or "Fix the selected step values before moving it."
+            )
             return
         self._steps[index], self._steps[target] = self._steps[target], self._steps[index]
         self._refresh_step_list(target)
 
-    def save_workflow(self) -> None:
+    def save_workflow(self) -> bool:
+        """Validate and write the workflow.
+
+        Returns True only when the file was written. On any failure the editor stays
+        open with its edits intact, and the status line is not changed.
+        """
         if self.config is None:
-            return
+            return False
         if not self._store_visible_fields():
             QMessageBox.warning(
                 self,
-                "Invalid value",
-                "Check numeric and JSON fields before saving.",
+                "Workflow not saved",
+                self._last_error or "Check numeric and JSON fields before saving.",
             )
-            return
-        try:
-            validate_config(self.config)
-        except ConfigurationError as exc:
-            QMessageBox.warning(self, "Workflow is invalid", str(exc))
-            return
+            return False
 
         path = self.workflow_path
         if path is None:
@@ -1599,22 +1693,18 @@ class WorkflowEditor(QWidget):
                 "Workflow files (*.json *.yaml *.yml)",
             )
             if not selected:
-                return
+                return False
             path = Path(selected)
         try:
-            if path.suffix.lower() in {".yaml", ".yml"}:
-                try:
-                    import yaml
-                except ImportError as exc:
-                    raise ConfigurationError(
-                        "Saving YAML requires PyYAML. Choose a JSON filename or install PyYAML."
-                    ) from exc
-                content = yaml.safe_dump(self.config, sort_keys=False, allow_unicode=True)
-            else:
-                content = json.dumps(self.config, indent=2, ensure_ascii=False) + "\n"
-            path.write_text(content, encoding="utf-8")
-        except (OSError, ConfigurationError) as exc:
-            QMessageBox.critical(self, "Unable to save workflow", str(exc))
-            return
+            save_config(self.config, path)
+        except ConfigurationError as exc:
+            QMessageBox.critical(
+                self,
+                "Workflow not saved",
+                f"{exc}\n\nThe file was not changed. The editor is still open so you can fix the problem.",
+            )
+            return False
         self.workflow_path = path
+        self._saved_snapshot = self._snapshot(self.config)
         self.save_state.setText(f"Saved to {path}")
+        return True

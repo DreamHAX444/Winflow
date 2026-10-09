@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -19,25 +20,6 @@ from PySide6.QtWidgets import (
 from winflow.ui.design_tokens import SPACING, create_stylesheet
 from winflow.ui.views.workflow_editor import WorkflowEditor
 from winflow.ui.views.workflows_page import WorkflowsPage
-
-
-class EmptyState(QWidget):
-    def __init__(self, title: str, description: str) -> None:
-        super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(SPACING["sm"])
-
-        title_label = QLabel(title)
-        title_label.setObjectName("emptyStateTitle")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        description_label = QLabel(description)
-        description_label.setObjectName("emptyStateDescription")
-        description_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        layout.addWidget(title_label)
-        layout.addWidget(description_label)
 
 
 class MainWindow(QMainWindow):
@@ -102,8 +84,10 @@ class MainWindow(QMainWindow):
         )
         layout.setSpacing(SPACING["xs"])
 
+        # Settings is not offered yet: it was a placeholder with no working options, so
+        # it is left out of navigation rather than shown as a dead end.
         self.navigation_buttons: list[QPushButton] = []
-        for index, label in enumerate(("Workflows", "Settings")):
+        for index, label in enumerate(("Workflows",)):
             button = QPushButton(label)
             button.setObjectName("navigationItem")
             button.setCheckable(True)
@@ -136,14 +120,8 @@ class MainWindow(QMainWindow):
             self.workflow_open_requested.emit
         )
         self.pages.addWidget(self.workflows_page)
-        self.pages.addWidget(
-            EmptyState(
-                "Settings",
-                "Settings will appear here in a future step.",
-            )
-        )
         self.workflow_editor = WorkflowEditor()
-        self.workflow_editor.back_requested.connect(self._return_to_workflows)
+        self.workflow_editor.back_requested.connect(self._request_back)
         self.pages.addWidget(self.workflow_editor)
         layout.addWidget(self.pages)
         return content
@@ -163,14 +141,37 @@ class MainWindow(QMainWindow):
         self.navigation.hide()
         self.pages.setCurrentWidget(self.workflow_editor)
 
-    def _return_to_workflows(self) -> None:
-        row = self.workflows_page.workflow_list.currentRow()
-        if self.workflow_editor.config is not None:
-            self.workflows_page.update_workflow_entry(
-                row,
-                self.workflow_editor.config,
-                self.workflow_editor.workflow_path,
-            )
+    def _request_back(self) -> None:
+        """Leave the editor, asking first when there are unsaved changes."""
+        editor = self.workflow_editor
+        refresh_list = True
+        if editor.has_unsaved_changes():
+            prompt = QMessageBox(self)
+            prompt.setWindowTitle("Unsaved changes")
+            prompt.setText("This workflow has unsaved changes.")
+            prompt.setInformativeText("Save them before going back to Workflows?")
+            save_button = prompt.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
+            discard_button = prompt.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+            cancel_button = prompt.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            prompt.setDefaultButton(save_button)
+            prompt.exec()
+            chosen = prompt.clickedButton()
+            if chosen is None or chosen is cancel_button:
+                return
+            if chosen is save_button:
+                # A failed or cancelled save keeps the editor open.
+                if not editor.save_workflow():
+                    return
+            elif chosen is discard_button:
+                # Discarded edits never reach the list.
+                refresh_list = False
+        self._leave_editor(refresh_list)
+
+    def _leave_editor(self, refresh_list: bool) -> None:
+        editor = self.workflow_editor
+        if refresh_list and editor.config is not None and editor.workflow_path is not None:
+            # Matched by path, not by the selected row, so the right entry is updated.
+            self.workflows_page.update_workflow_entry(editor.config, editor.workflow_path)
         self._show_page(0)
 
 

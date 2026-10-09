@@ -52,14 +52,16 @@ class ConfigurationCompatibilityTests(unittest.TestCase):
             ):
                 validate_config(config)
 
-    def test_legacy_trigger_policy_aliases_are_validated_and_supported(self) -> None:
-        self.assertTrue(
-            validate_config(
-                self._config(
-                    trigger={"type": "manual", "while_running_policy": "run_concurrently"}
+    def test_unsupported_trigger_policies_are_rejected_at_validation(self) -> None:
+        for policy in ("run_concurrently", "terminate_and_restart"):
+            with self.subTest(policy=policy), self.assertRaisesRegex(
+                SchemaValidationError, "not supported"
+            ):
+                validate_config(
+                    self._config(
+                        trigger={"type": "manual", "while_running_policy": policy}
+                    )
                 )
-            )
-        )
         with self.assertRaisesRegex(SchemaValidationError, "while_running_policy"):
             validate_config(
                 self._config(
