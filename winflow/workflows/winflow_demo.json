@@ -1,0 +1,72 @@
+{
+    "schema_version": "1.0",
+    "workflow": {
+        "id": "winflow-demo",
+        "name": "WinFlow Feature Demonstration",
+        "version": "1.0",
+        "description": "Demonstrates variables, loops, clipboard interaction, and verifications."
+    },
+    "trigger": {
+        "type": "windows_notification",
+        "app_name": "DemoApp",
+        "title_contains": "Start Demo"
+    },
+    "variables": {
+        "demo_counter": 0,
+        "max_iterations": 3
+    },
+    "steps": [
+        {
+            "action": "set_variable",
+            "variable": "demo_counter",
+            "value": 0,
+            "description": "Initialize Counter"
+        },
+        {
+            "action": "clipboard_clear",
+            "description": "Clear the clipboard before test"
+        },
+        {
+            "action": "clipboard_write",
+            "text": "WinFlow Demo Started: {{trigger_event.title}}",
+            "description": "Write initial state to clipboard"
+        },
+        {
+            "action": "wait",
+            "duration": 1.0,
+            "description": "Brief pause to ensure clipboard is ready"
+        },
+        {
+            "action": "while",
+            "description": "Loop multiple times based on config",
+            "steps": [
+                {
+                    "action": "clipboard_read",
+                    "variable_name": "current_clip",
+                    "description": "Read what is in clipboard"
+                },
+                {
+                    "action": "wait",
+                    "duration": 0.5
+                }
+            ]
+        },
+        {
+            "action": "if",
+            "description": "Condition check example",
+            "condition": {
+                "type": "AND",
+                "conditions": [
+                    {"variable": "demo_counter", "operator": "==", "value": 0}
+                ]
+            },
+            "then": [
+                {
+                    "action": "clipboard_write",
+                    "text": "Condition branch completed."
+                }
+            ],
+            "else": []
+        }
+    ]
+}

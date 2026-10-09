@@ -1,0 +1,145 @@
+{
+  "schema_version": "1.0",
+  "settings": {
+    "timeout_seconds": 30.0,
+    "retry_attempts": 3,
+    "retry_delay_seconds": 1.0,
+    "max_restarts": 3,
+    "log_level": "INFO"
+  },
+  "workflow": {
+    "id": "desktop_automation_demo_workflow",
+    "name": "Generic Desktop Automation Workflow with Verification & Retry",
+    "description": "Demonstration workflow exercising Phase 3 verification, retry, and failure policies"
+  },
+  "trigger": {
+    "type": "windows_notification",
+    "match": {
+      "application": {
+        "mode": "contains",
+        "value": "Example"
+      },
+      "title": {
+        "mode": "contains",
+        "value": "completed"
+      },
+      "body": {
+        "mode": "contains",
+        "value": "finished"
+      },
+      "case_sensitive": false
+    },
+    "deduplication": {
+      "enabled": true,
+      "window_seconds": 10
+    },
+    "cooldown_seconds": 5,
+    "while_running": "ignore"
+  },
+  "loop": {
+    "count": 1,
+    "delay_between_seconds": 0.0
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "name": "inspect_initial_window",
+      "action": "get_active_window",
+      "params": {
+        "variable_name": "initial_window_info"
+      },
+      "timeout_seconds": 5.0
+    },
+    {
+      "step_id": 2,
+      "name": "verify_active_window_exists",
+      "action": "wait",
+      "params": {
+        "seconds": 0.05
+      },
+      "verify": {
+        "type": "window_exists",
+        "target": {
+          "title_contains": "Default Mock Window"
+        },
+        "timeout_seconds": 2.0,
+        "poll_interval_seconds": 0.1
+      },
+      "failure": {
+        "policy": "retry",
+        "attempts": 2,
+        "delay_seconds": 0.1
+      }
+    },
+    {
+      "step_id": 3,
+      "name": "prepare_clipboard_data",
+      "action": "clipboard_write",
+      "params": {
+        "text": "Generic Automation Value"
+      }
+    },
+    {
+      "step_id": 4,
+      "name": "verify_clipboard_data",
+      "action": "clipboard_read",
+      "params": {
+        "variable_name": "read_clipboard_value"
+      }
+    },
+    {
+      "step_id": 5,
+      "name": "move_cursor",
+      "action": "move",
+      "params": {
+        "x": 200,
+        "y": 200,
+        "duration_ms": 0
+      }
+    },
+    {
+      "step_id": 6,
+      "name": "click_location",
+      "action": "click",
+      "params": {
+        "x": 200,
+        "y": 200,
+        "button": "left",
+        "clicks": 1
+      }
+    },
+    {
+      "step_id": 7,
+      "name": "scroll_view",
+      "action": "scroll",
+      "params": {
+        "amount": -2
+      }
+    },
+    {
+      "step_id": 8,
+      "name": "press_navigation_key",
+      "action": "key",
+      "params": {
+        "key": "TAB"
+      }
+    },
+    {
+      "step_id": 9,
+      "name": "execute_shortcut",
+      "action": "hotkey",
+      "params": {
+        "keys": ["CTRL", "C"]
+      }
+    },
+    {
+      "step_id": 10,
+      "name": "type_input_text",
+      "action": "type",
+      "params": {
+        "text": "Automated text input",
+        "interval_ms": 0
+      }
+    }
+  ]
+}

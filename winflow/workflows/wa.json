@@ -1,0 +1,330 @@
+{
+  "schema_version": "1.0",
+  "settings": {
+    "dry_run": false,
+    "emergency_stop_hotkey": "F8",
+    "enabled": true,
+    "global_timeout_seconds": 30.0,
+    "screenshot_on_failure": false,
+    "single_instance": true
+  },
+  "workflow": {
+    "id": "new_workflow",
+    "loop": {
+      "count": 1,
+      "mode": "count"
+    },
+    "name": "wa",
+    "steps": [
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1.0,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 5.0
+        },
+        "verify": {
+          "target": {
+            "executable": "Antigravity IDE.exe",
+            "title_contains": "controller_app - Antigravity IDE - Review",
+            "type": "window"
+          },
+          "timeout_seconds": 0.0,
+          "type": "window_active"
+        }
+      },
+      {
+        "action": "click",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "button": "left",
+          "clicks": 1,
+          "interval_ms": 80,
+          "x": 1286,
+          "y": 642
+        }
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 1.0
+        }
+      },
+      {
+        "action": "click",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "button": "left",
+          "clicks": 1,
+          "interval_ms": 80,
+          "x": 1274,
+          "y": 563
+        }
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 1.0
+        }
+      },
+      {
+        "action": "focus_window",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "state": "maximize",
+          "target": {
+            "executable_name": "chrome.exe",
+            "hwnd": 133348,
+            "process_name": "chrome.exe",
+            "title_exact": "প্রজেক্ট ফাইল রিপোর্ট - Helium",
+            "type": "window"
+          }
+        },
+        "timeout_seconds": 10
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 1.0
+        }
+      },
+      {
+        "action": "click",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "button": "left",
+          "clicks": 1,
+          "interval_ms": 80,
+          "x": 753,
+          "y": 704
+        }
+      },
+      {
+        "action": "hotkey",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "keys": [
+            "CTRL",
+            "V"
+          ]
+        }
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 1.0
+        }
+      },
+      {
+        "action": "key",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "key": "ENTER"
+        }
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 100.0
+        }
+      },
+      {
+        "action": "click",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "button": "middle",
+          "clicks": 1,
+          "interval_ms": 80,
+          "x": 878,
+          "y": 149
+        }
+      },
+      {
+        "action": "move",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "duration_ms": 150,
+          "x": 874,
+          "y": 635
+        }
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 5.0
+        }
+      },
+      {
+        "action": "click",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "button": "left",
+          "clicks": 1,
+          "interval_ms": 80,
+          "x": 483,
+          "y": 588
+        }
+      },
+      {
+        "action": "focus_window",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "state": "maximize",
+          "target": {
+            "executable_name": "Antigravity IDE.exe",
+            "hwnd": 2032592,
+            "process_name": "Antigravity IDE.exe",
+            "title_exact": "controller_app - Antigravity IDE - Location.kt",
+            "type": "window"
+          }
+        },
+        "timeout_seconds": 10
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 1.0
+        }
+      },
+      {
+        "action": "click",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "button": "left",
+          "clicks": 1,
+          "interval_ms": 80,
+          "x": 1129,
+          "y": 682
+        }
+      },
+      {
+        "action": "hotkey",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "keys": [
+            "CTRL",
+            "V"
+          ]
+        }
+      },
+      {
+        "action": "wait",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1,
+          "policy": "stop"
+        },
+        "params": {
+          "seconds": 1.0
+        }
+      },
+      {
+        "action": "key",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1.0,
+          "policy": "stop"
+        },
+        "params": {
+          "key": "ENTER"
+        }
+      }
+    ],
+    "trigger": {
+      "cooldown_seconds": 0.0,
+      "match": {
+        "application": {
+          "mode": "contains",
+          "value": "Antigravity IDE"
+        }
+      },
+      "type": "windows_notification"
+    }
+  }
+}

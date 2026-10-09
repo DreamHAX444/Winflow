@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "settings": {
+    "enabled": true,
+    "global_timeout_seconds": 30.0,
+    "emergency_stop_hotkey": "F8",
+    "single_instance": true,
+    "screenshot_on_failure": false,
+    "dry_run": false
+  },
+  "workflow": {
+    "id": "workflow_1",
+    "name": "New Workflow",
+    "trigger": {
+      "type": "windows_notification",
+      "application": {
+        "contains": ""
+      },
+      "title": {
+        "contains": ""
+      },
+      "body": {
+        "contains": ""
+      },
+      "cooldown_seconds": 3.0
+    },
+    "loop": {
+      "mode": "count",
+      "count": 1
+    },
+    "steps": [
+      {
+        "action": "focus_window",
+        "executable_name": "chrome.exe",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1.0,
+          "policy": "stop"
+        },
+        "label": "Step 1",
+        "state": "maximize",
+        "target": {
+          "title_contains": "\u09aa\u09cd\u09b0\u099c\u09c7\u0995\u09cd\u099f \u09ab\u09be\u0987\u09b2 \u09b0\u09bf\u09aa\u09cb\u09b0\u09cd\u099f - Helium",
+          "type": "window"
+        },
+        "timeout_seconds": 10.0,
+        "title_contains": "Helium",
+        "title_exact": "\u09aa\u09cd\u09b0\u099c\u09c7\u0995\u09cd\u099f \u09ab\u09be\u0987\u09b2 \u09b0\u09bf\u09aa\u09cb\u09b0\u09cd\u099f - Helium",
+        "verification": {
+          "target": {
+            "title_contains": "\u09aa\u09cd\u09b0\u099c\u09c7\u0995\u09cd\u099f \u09ab\u09be\u0987\u09b2 \u09b0\u09bf\u09aa\u09cb\u09b0\u09cd\u099f - Helium",
+            "type": "window"
+          },
+          "timeout_seconds": 0.0,
+          "type": "window_active"
+        }
+      },
+      {
+        "action": "wait",
+        "seconds": 1.0
+      },
+      {
+        "action": "click",
+        "button": "left",
+        "clicks": 1.0,
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1.0,
+          "policy": "stop"
+        },
+        "interval_ms": 80.0,
+        "label": "Step 2",
+        "x": 559.0,
+        "y": 715.0
+      },
+      {
+        "action": "wait",
+        "milliseconds": 0.0,
+        "seconds": 0.5
+      },
+      {
+        "action": "hotkey",
+        "failure": {
+          "attempts": 1,
+          "delay_seconds": 1.0,
+          "policy": "stop"
+        },
+        "keys": [
+          "CTRL",
+          "V"
+        ],
+        "label": "Step 3",
+        "verification": {
+          "target": {
+            "title_contains": "\u09aa\u09cd\u09b0\u099c\u09c7\u0995\u09cd\u099f \u09ab\u09be\u0987\u09b2 \u09b0\u09bf\u09aa\u09cb\u09b0\u09cd\u099f - Helium",
+            "type": "window"
+          },
+          "timeout_seconds": 0.0,
+          "type": "window_active"
+        }
+      }
+    ]
+  }
+}
