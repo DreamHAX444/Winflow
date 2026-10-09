@@ -5,11 +5,21 @@ before the engine starts listeners or performs desktop actions.
 """
 
 import math
+from datetime import datetime
 from typing import Any
 
+from winflow.config.enablement import is_workflow_enabled
+from winflow.config.initial_variables import config_variables
+from winflow.config.step_aliases import canonical_step
 from winflow.config.schema import SUPPORTED_SCHEMA_VERSIONS, WINFLOW_CONFIG_SCHEMA
 from winflow.core.emergency_hotkey import parse_emergency_hotkey
-from winflow.core.errors import SchemaValidationError
+from winflow.core.errors import ConfigurationError, SchemaValidationError, TriggerConfigurationError
+from winflow.triggers.matcher import validate_notification_trigger_config
+from winflow.triggers.schedule import (
+    SCHEDULE_TRIGGER_TYPES,
+    ScheduleConfigurationError,
+    validate_schedule_trigger_config,
+)
 
 try:
     import jsonschema
@@ -47,8 +57,12 @@ def _validate_loop_block(loop: Any, path: str) -> None:
         )
 
 
-def validate_config(config: Any) -> bool:
+def validate_config(config: Any, now: datetime | None = None) -> bool:
     """Validate a parsed workflow configuration against schema and runtime rules.
+
+    Args:
+        config: Parsed workflow configuration.
+        now: Reference time for one-time schedule checks (defaults to the local clock).
 
     Raises:
         SchemaValidationError: If the structure or any runtime-supported value is invalid.
@@ -91,6 +105,15 @@ def validate_config(config: Any) -> bool:
             raise SchemaValidationError(
                 f"'settings.{timeout_key}' must be a finite non-negative number"
             )
+    if "retry_attempts" in settings:
+        retry_attempts = settings["retry_attempts"]
+        if isinstance(retry_attempts, bool) or not isinstance(retry_attempts, int) or retry_attempts < 0:
+            raise SchemaValidationError(
+                "'settings.retry_attempts' must be a non-negative integer "
+                "(number of retries after the first attempt)"
+            )
+    if "retry_delay_seconds" in settings and not _finite_non_negative(settings["retry_delay_seconds"]):
+        raise SchemaValidationError("'settings.retry_delay_seconds' must be a finite non-negative number")
     if "emergency_stop_hotkey" in settings:
         try:
             parse_emergency_hotkey(settings["emergency_stop_hotkey"])
@@ -135,7 +158,11 @@ def validate_config(config: Any) -> bool:
                 raise SchemaValidationError(
                     f"Step at {step_path} missing required non-empty string 'action'"
                 )
-            for key in ("verify", "failure", "retry"):
+            try:
+                canonical_step(step, step_path)
+            except ConfigurationError as exc:
+                raise SchemaValidationError(str(exc)) from exc
+            for key in ("verify", "verification", "failure", "retry"):
                 if key in step and not isinstance(step[key], dict):
                     raise SchemaValidationError(f"Step at {step_path} '{key}' must be a dictionary")
             for timeout_key in ("timeout", "timeout_seconds"):
@@ -166,11 +193,28 @@ def validate_config(config: Any) -> bool:
 
     _validate_steps(steps, 0, "steps")
 
+    # Raises SchemaValidationError for malformed, reserved, or conflicting variables.
+    config_variables(config)
+
     for loop_path, block in (("loop", config), ("workflow.loop", workflow)):
         if "loop" in block:
             _validate_loop_block(block["loop"], loop_path)
 
-    def _validate_trigger_block(trigger: Any, path: str) -> None:
+    def _validate_trigger_block(trigger: Any, path: str, workflow_enabled: bool) -> None:
+        _validate_trigger_structure(trigger, path)
+        trigger_type = str(trigger.get("type", "")).strip().lower() if "type" in trigger else ""
+        if trigger_type == "windows_notification":
+            try:
+                validate_notification_trigger_config(trigger)
+            except TriggerConfigurationError as exc:
+                raise SchemaValidationError(f"'{path}': {exc.message}") from exc
+        elif trigger_type in SCHEDULE_TRIGGER_TYPES:
+            try:
+                validate_schedule_trigger_config(trigger, now=now, workflow_enabled=workflow_enabled)
+            except ScheduleConfigurationError as exc:
+                raise SchemaValidationError(f"'{path}': {exc.message}") from exc
+
+    def _validate_trigger_structure(trigger: Any, path: str) -> None:
         if not isinstance(trigger, dict):
             raise SchemaValidationError(
                 f"'{path}' must be a dictionary, got {type(trigger).__name__}"
@@ -199,22 +243,24 @@ def validate_config(config: Any) -> bool:
             if policy_key not in trigger:
                 continue
             policy = trigger[policy_key]
-            if not isinstance(policy, str) or policy.strip().lower() not in {
-                "ignore",
-                "queue",
-                "restart",
-                "terminate_and_restart",
-                "run_concurrently",
-            }:
+            normalized_policy = policy.strip().lower() if isinstance(policy, str) else policy
+            if normalized_policy in {"terminate_and_restart", "run_concurrently"}:
                 raise SchemaValidationError(
-                    f"'{path}.{policy_key}' must be one of 'ignore', 'queue', 'restart', "
-                    "'terminate_and_restart', or 'run_concurrently'"
+                    f"'{path}.{policy_key}' value '{policy}' is not supported yet; "
+                    "use 'ignore', 'queue', or 'restart'"
+                )
+            if normalized_policy not in {"ignore", "queue", "restart"}:
+                raise SchemaValidationError(
+                    f"'{path}.{policy_key}' must be one of 'ignore', 'queue', or 'restart'"
                 )
 
+    # Effective enablement uses the same rule as the engine. Structure is validated for
+    # every trigger; temporal activation rules apply only when the workflow is enabled.
+    effective_workflow_enabled = is_workflow_enabled(config)
     if "trigger" in config:
-        _validate_trigger_block(config["trigger"], "trigger")
+        _validate_trigger_block(config["trigger"], "trigger", effective_workflow_enabled)
     if "trigger" in workflow:
-        _validate_trigger_block(workflow["trigger"], "workflow.trigger")
+        _validate_trigger_block(workflow["trigger"], "workflow.trigger", effective_workflow_enabled)
 
     if HAS_JSONSCHEMA:
         try:

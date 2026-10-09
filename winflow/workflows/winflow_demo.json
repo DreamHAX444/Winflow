@@ -8,8 +8,10 @@
     },
     "trigger": {
         "type": "windows_notification",
-        "app_name": "DemoApp",
-        "title_contains": "Start Demo"
+        "match": {
+            "application": {"mode": "contains", "value": "DemoApp"},
+            "title": {"mode": "contains", "value": "Start Demo"}
+        }
     },
     "variables": {
         "demo_counter": 0,
@@ -18,8 +20,7 @@
     "steps": [
         {
             "action": "set_variable",
-            "variable": "demo_counter",
-            "value": 0,
+            "params": {"name": "demo_counter", "value": 0},
             "description": "Initialize Counter"
         },
         {
@@ -33,12 +34,19 @@
         },
         {
             "action": "wait",
-            "duration": 1.0,
+            "seconds": 1.0,
             "description": "Brief pause to ensure clipboard is ready"
         },
         {
             "action": "while",
-            "description": "Loop multiple times based on config",
+            "description": "Read the clipboard until a value is captured (runs once; bounded)",
+            "max_iterations": 3,
+            "condition": {
+                "type": "ALL",
+                "conditions": [
+                    {"operator": "not_exists", "left": "{{ variables.current_clip }}"}
+                ]
+            },
             "steps": [
                 {
                     "action": "clipboard_read",
@@ -47,7 +55,7 @@
                 },
                 {
                     "action": "wait",
-                    "duration": 0.5
+                    "seconds": 0.5
                 }
             ]
         },
@@ -55,9 +63,9 @@
             "action": "if",
             "description": "Condition check example",
             "condition": {
-                "type": "AND",
+                "type": "ALL",
                 "conditions": [
-                    {"variable": "demo_counter", "operator": "==", "value": 0}
+                    {"operator": "equals", "left": "{{ variables.demo_counter }}", "right": 0}
                 ]
             },
             "then": [

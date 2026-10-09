@@ -152,6 +152,20 @@ class FailureHandler:
                 restart_count=current_restarts,
             )
 
+        if policy == FailurePolicy.RETRY:
+            # RetryExecutor has already made every configured attempt before the
+            # failure reaches this handler. Abort without another retry loop.
+            self.logger.error(
+                "Step %s failed after its retry attempts were used: %s",
+                step_id,
+                error,
+            )
+            return FailureDecision(
+                action=FailureAction.ABORT,
+                policy=policy,
+                message=str(error),
+            )
+
         # Fallback to STOP for unknown policies
         self.logger.warning(
             "Unknown failure policy '%s'. Defaulting to STOP. Error: %s",
