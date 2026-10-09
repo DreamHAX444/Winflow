@@ -26,6 +26,15 @@ WINFLOW_CONFIG_SCHEMA: dict[str, Any] = {
                 "id": {"type": "string", "minLength": 1},
                 "name": {"type": "string"},
                 "description": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "loop": {
+                    "type": "object",
+                    "properties": {
+                        "count": {"type": "integer", "minimum": 1},
+                        "delay_between_seconds": {"type": "number", "minimum": 0},
+                    },
+                    "additionalProperties": True,
+                },
                 "trigger": {
                     "type": "object",
                     "properties": {
@@ -40,8 +49,25 @@ WINFLOW_CONFIG_SCHEMA: dict[str, Any] = {
                         "cooldown_seconds": {"type": "number", "minimum": 0},
                         "while_running": {
                             "type": "string",
-                            "enum": ["ignore", "queue", "restart"],
+                            "enum": [
+                                "ignore",
+                                "queue",
+                                "restart",
+                                "terminate_and_restart",
+                                "run_concurrently",
+                            ],
                         },
+                        "while_running_policy": {
+                            "type": "string",
+                            "enum": [
+                                "ignore",
+                                "queue",
+                                "restart",
+                                "terminate_and_restart",
+                                "run_concurrently",
+                            ],
+                        },
+                        "enabled": {"type": "boolean"},
                     },
                     "additionalProperties": True,
                 },
@@ -56,7 +82,18 @@ WINFLOW_CONFIG_SCHEMA: dict[str, Any] = {
         "settings": {
             "type": "object",
             "properties": {
-                "timeout_seconds": {"type": "number", "minimum": 0},
+                "enabled": {"type": "boolean"},
+                "timeout_seconds": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Default per-action timeout; takes precedence over global_timeout_seconds.",
+                },
+                "global_timeout_seconds": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Legacy alias for timeout_seconds.",
+                },
+                "emergency_stop_hotkey": {"type": "string", "minLength": 1},
                 "retry_attempts": {"type": "integer", "minimum": 0},
                 "retry_delay_seconds": {"type": "number", "minimum": 0},
                 "max_restarts": {"type": "integer", "minimum": 1},
@@ -104,20 +141,32 @@ WINFLOW_CONFIG_SCHEMA: dict[str, Any] = {
                 "cooldown_seconds": {"type": "number", "minimum": 0},
                 "while_running": {
                     "type": "string",
-                    "enum": ["ignore", "queue", "restart"],
+                    "enum": [
+                        "ignore",
+                        "queue",
+                        "restart",
+                        "terminate_and_restart",
+                        "run_concurrently",
+                    ],
                 },
+                "while_running_policy": {
+                    "type": "string",
+                    "enum": [
+                        "ignore",
+                        "queue",
+                        "restart",
+                        "terminate_and_restart",
+                        "run_concurrently",
+                    ],
+                },
+                "enabled": {"type": "boolean"},
             },
             "additionalProperties": True,
         },
         "loop": {
             "type": "object",
             "properties": {
-                "count": {
-                    "oneOf": [
-                        {"type": "integer", "minimum": 1},
-                        {"type": "string", "enum": ["infinite"]},
-                    ]
-                },
+                "count": {"type": "integer", "minimum": 1},
                 "delay_between_seconds": {"type": "number", "minimum": 0},
             },
             "additionalProperties": True,

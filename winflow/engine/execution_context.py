@@ -7,10 +7,12 @@ and thread-safe cancellation integrated with the emergency stop subsystem.
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from collections.abc import Generator
 from typing import Any
 
 from winflow.core.emergency_stop import EmergencyStop, get_emergency_stop
-from winflow.core.errors import EmergencyStopTriggered
+from winflow.core.errors import ActionExecutionError, EmergencyStopTriggered
 
 
 class ExecutionContext:
@@ -48,6 +50,7 @@ class ExecutionContext:
         self._paused_event = threading.Event()
         self._cancel_reason: str | None = None
         self._lock = threading.Lock()
+        self._thread_state = threading.local()
         self._cleanup_callbacks: list[Any] = []
 
         # Link to emergency stop subsystem
@@ -62,12 +65,37 @@ class ExecutionContext:
             self._cancel_event.set()
 
     def is_cancelled(self) -> bool:
-        """Return True if either context was cancelled or emergency stop triggered."""
+        """Return True if this execution or emergency stop was cancelled."""
         if self._cancel_event.is_set():
             return True
         if self.emergency_stop and self.emergency_stop.is_stopped():
             return True
-        return False
+        action_cancel = getattr(self._thread_state, "action_cancel_event", None)
+        return bool(action_cancel is not None and action_cancel.is_set())
+
+    @contextmanager
+    def action_cancellation_scope(
+        self,
+        cancellation_event: threading.Event,
+    ) -> Generator[None, None, None]:
+        """Expose one timed action's cancellation token to its worker thread.
+
+        The token is thread-local and does not poison the execution context, so a
+        workflow may apply its configured retry policy after the timed worker has
+        fully stopped.
+        """
+        previous = getattr(self._thread_state, "action_cancel_event", None)
+        self._thread_state.action_cancel_event = cancellation_event
+        try:
+            yield
+        finally:
+            if previous is None:
+                try:
+                    del self._thread_state.action_cancel_event
+                except AttributeError:
+                    pass
+            else:
+                self._thread_state.action_cancel_event = previous
 
     def check_cancellation(self) -> None:
         """Raise EmergencyStopTriggered if execution was cancelled or emergency stop fired.
@@ -83,18 +111,29 @@ class ExecutionContext:
             with self._lock:
                 reason = self._cancel_reason or "Context cancelled"
             raise EmergencyStopTriggered(f"Execution aborted: {reason}")
-            
-        # Block if paused
+
+        action_cancel = getattr(self._thread_state, "action_cancel_event", None)
+        if action_cancel is not None and action_cancel.is_set():
+            raise ActionExecutionError("Timed action cancellation requested.")
+
+        # Block if paused, but let workflow and timed-action cancellation wake it.
         if self._paused_event.is_set():
             while self._paused_event.is_set():
-                if self._cancel_event.is_set() or (self.emergency_stop and self.emergency_stop.is_stopped()):
+                action_cancel = getattr(self._thread_state, "action_cancel_event", None)
+                if (
+                    self._cancel_event.is_set()
+                    or (self.emergency_stop and self.emergency_stop.is_stopped())
+                    or (action_cancel is not None and action_cancel.is_set())
+                ):
                     break
-                import time
                 time.sleep(0.1)
-            # Re-check cancellation after un-pausing
+            # Re-check cancellation after un-pausing.
             if self._cancel_event.is_set() or (self.emergency_stop and self.emergency_stop.is_stopped()):
                 reason = self._cancel_reason or "Context cancelled"
                 raise EmergencyStopTriggered(f"Execution aborted: {reason}")
+            action_cancel = getattr(self._thread_state, "action_cancel_event", None)
+            if action_cancel is not None and action_cancel.is_set():
+                raise ActionExecutionError("Timed action cancellation requested.")
 
     def pause(self) -> None:
         """Pause the workflow execution."""

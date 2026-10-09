@@ -7,7 +7,6 @@ and requests workflow execution through the engine.
 
 import logging
 import threading
-from collections import deque
 from collections.abc import Callable
 from typing import Any
 
@@ -106,8 +105,10 @@ class WindowsNotificationTrigger(BaseTrigger):
             start_from_current=bool(self.config.get("start_from_current", True)),
         )
 
+        # Engine owns the atomic execution gate and applies while_running policy.
+        # This flag is retained for status/compatibility only; event admission is
+        # intentionally not performed here, before the engine callback.
         self._is_executing_workflow = False
-        self._queued_events: deque[NotificationEvent] = deque()
         self._lock = threading.Lock()
 
     @property
@@ -116,27 +117,9 @@ class WindowsNotificationTrigger(BaseTrigger):
         return self._source
 
     def set_workflow_executing(self, executing: bool) -> None:
-        """Update workflow execution state to enforce concurrent policies.
-
-        Args:
-            executing: True if a triggered workflow is currently running.
-        """
+        """Update compatibility/status state; execution policy is engine-owned."""
         with self._lock:
-            self._is_executing_workflow = executing
-
-            # If execution finished and we have queued events, trigger next queued event
-            if not executing and self._queued_events and self._callback is not None:
-                next_event = self._queued_events.popleft()
-                self.logger.info(
-                    "Workflow finished. Processing queued notification event '%s'.",
-                    next_event.event_id,
-                )
-                threading.Thread(
-                    target=self._execute_trigger,
-                    args=(next_event,),
-                    name="WinFlowQueuedTriggerWorker",
-                    daemon=True,
-                ).start()
+            self._is_executing_workflow = bool(executing)
 
     def start(self, callback: Callable[[dict[str, Any]], None]) -> None:
         """Start listening for Windows notifications and invoke callback on match.
@@ -162,7 +145,6 @@ class WindowsNotificationTrigger(BaseTrigger):
                 return
 
             self._is_running = False
-            self._queued_events.clear()
 
         self._source.stop()
         self.logger.info("WindowsNotificationTrigger '%s' stopped.", self.name)
@@ -209,32 +191,9 @@ class WindowsNotificationTrigger(BaseTrigger):
             )
             return
 
-        # 4. Concurrent execution policy check
-        with self._lock:
-            if self._is_executing_workflow:
-                if self.while_running_policy == "ignore":
-                    self.logger.info(
-                        "Notification ignored - workflow is already running (policy=ignore)."
-                    )
-                    return
-                elif self.while_running_policy == "queue":
-                    self.logger.info(
-                        "Workflow is currently running. Enqueuing notification event '%s' (policy=queue).",
-                        event.event_id,
-                    )
-                    self._queued_events.append(event)
-                    return
-                elif self.while_running_policy == "restart":
-                    self.logger.info(
-                        "Workflow is currently running. Enqueuing notification event '%s' (policy=restart).",
-                        event.event_id,
-                    )
-                    self._queued_events.append(event)
-                    return
-                else:
-                    return
-
-        # 5. Passed all filters -> execute trigger
+        # 4. Execution admission is owned by WorkflowEngine. The engine reserves
+        # its per-listener state atomically in the callback before starting a
+        # worker, so rapid events cannot race a local flag update here.
         self._execute_trigger(event)
 
     def _execute_trigger(self, event: NotificationEvent) -> None:

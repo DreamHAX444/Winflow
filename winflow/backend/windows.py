@@ -19,11 +19,100 @@ from winflow.backend.base import (
 )
 from winflow.core.errors import ActionExecutionError
 
-# Win32 Constants
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
 
-# Mouse flags
+# Pointer-sized Win32 types must not use ctypes' default c_int conversion on
+# 64-bit Windows. Keep these definitions usable by Linux-hosted mock tests too.
+_POINTER_SIZE = ctypes.c_size_t
+_POINTER_SIGNED = ctypes.c_ssize_t
+_CALLBACK_FACTORY = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+_WNDENUMPROC = _CALLBACK_FACTORY(
+    wintypes.BOOL, wintypes.HWND, _POINTER_SIGNED
+)
+
+
+def _set_api_signature(
+    library: Any,
+    function_name: str,
+    argtypes: list[Any],
+    restype: Any,
+) -> None:
+    """Set a loaded Win32 function's ctypes signature if it is available."""
+    if library is None:
+        return
+    function = getattr(library, function_name, None)
+    if function is not None:
+        function.argtypes = argtypes
+        function.restype = restype
+
+
+def _configure_win32_apis(user32_api: Any, kernel32_api: Any) -> None:
+    """Declare all signatures used below, especially pointer-sized handles."""
+    bool_type = wintypes.BOOL
+    hwnd_type = wintypes.HWND
+    handle_type = wintypes.HANDLE
+    hglobal_type = wintypes.HGLOBAL
+    dword_type = wintypes.DWORD
+    uint_type = wintypes.UINT
+    point_pointer = ctypes.POINTER(wintypes.POINT)
+    dword_pointer = ctypes.POINTER(dword_type)
+
+    for name, args, result in (
+        ("SetCursorPos", [ctypes.c_int, ctypes.c_int], bool_type),
+        (
+            "mouse_event",
+            [dword_type, dword_type, dword_type, dword_type, _POINTER_SIZE],
+            None,
+        ),
+        ("GetCursorPos", [point_pointer], bool_type),
+        ("keybd_event", [wintypes.BYTE, wintypes.BYTE, dword_type, _POINTER_SIZE], None),
+        ("OpenClipboard", [hwnd_type], bool_type),
+        ("GetClipboardData", [uint_type], handle_type),
+        ("CloseClipboard", [], bool_type),
+        ("EmptyClipboard", [], bool_type),
+        ("SetClipboardData", [uint_type, handle_type], handle_type),
+        ("GetWindowTextLengthW", [hwnd_type], ctypes.c_int),
+        ("GetWindowTextW", [hwnd_type, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+        ("GetWindowThreadProcessId", [hwnd_type, dword_pointer], dword_type),
+        ("GetForegroundWindow", [], hwnd_type),
+        ("IsWindowVisible", [hwnd_type], bool_type),
+        ("EnumWindows", [_WNDENUMPROC, _POINTER_SIGNED], bool_type),
+        ("IsWindow", [hwnd_type], bool_type),
+        ("ShowWindow", [hwnd_type, ctypes.c_int], bool_type),
+        ("SetForegroundWindow", [hwnd_type], bool_type),
+    ):
+        _set_api_signature(user32_api, name, args, result)
+
+    for name, args, result in (
+        ("GlobalAlloc", [uint_type, _POINTER_SIZE], hglobal_type),
+        ("GlobalLock", [hglobal_type], wintypes.LPVOID),
+        ("GlobalUnlock", [hglobal_type], bool_type),
+        ("GlobalFree", [hglobal_type], hglobal_type),
+        ("OpenProcess", [dword_type, bool_type, dword_type], handle_type),
+        (
+            "QueryFullProcessImageNameW",
+            [handle_type, dword_type, wintypes.LPWSTR, dword_pointer],
+            bool_type,
+        ),
+        ("CloseHandle", [handle_type], bool_type),
+    ):
+        _set_api_signature(kernel32_api, name, args, result)
+
+
+def _load_win32_library(name: str) -> Any:
+    """Load a Win32 DLL when running on Windows; return None on other platforms."""
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        return None
+    return loader(name, use_last_error=True)
+
+
+# Module import remains safe on non-Windows platforms so tests can substitute
+# mock API objects. Native actions are still Windows-only via get_backend().
+user32 = _load_win32_library("user32")
+kernel32 = _load_win32_library("kernel32")
+_configure_win32_apis(user32, kernel32)
+
+# Win32 Constants
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -80,7 +169,7 @@ VK_MAP: dict[str, int] = {
     "PRINTSCREEN": 0x2C,
 }
 
-# Add standard letters and numbers to VK_MAP
+# Add standard letters, numbers, and function keys to VK_MAP.
 for _char_code in range(ord("A"), ord("Z") + 1):
     VK_MAP[chr(_char_code)] = _char_code
 for _num_code in range(ord("0"), ord("9") + 1):
@@ -318,6 +407,18 @@ class WindowsKeyboardBackend(BaseKeyboardBackend):
         return "; ".join(errors) if errors else None
 
     def type_text(self, text: str, interval_ms: int = 0) -> None:
+        self._type_text(text, interval_ms, cancel_check=None)
+
+    def type_text_cancellable(
+        self,
+        text: str,
+        interval_ms: int,
+        cancel_check: Any,
+    ) -> None:
+        """Type text while checking execution cancellation between characters."""
+        self._type_text(text, interval_ms, cancel_check=cancel_check)
+
+    def _type_text(self, text: str, interval_ms: int, cancel_check: Any = None) -> None:
         if not isinstance(text, str):
             raise ActionExecutionError("Text to type must be a string.")
         if isinstance(interval_ms, bool) or not isinstance(interval_ms, int) or interval_ms < 0:
@@ -331,6 +432,8 @@ class WindowsKeyboardBackend(BaseKeyboardBackend):
 
         with self._key_lock:
             for index in range(0, len(encoded), 2):
+                if callable(cancel_check):
+                    cancel_check()
                 code_unit = encoded[index] | (encoded[index + 1] << 8)
                 self._held_unicode.append(code_unit)
                 try:
@@ -347,8 +450,17 @@ class WindowsKeyboardBackend(BaseKeyboardBackend):
                     raise ActionExecutionError(
                         f"Failed to release a typed character: {cleanup_error}"
                     )
+                if callable(cancel_check):
+                    cancel_check()
                 if interval_ms > 0:
-                    time.sleep(interval_ms / 1000.0)
+                    delay = interval_ms / 1000.0
+                    if callable(cancel_check):
+                        deadline = time.monotonic() + delay
+                        while time.monotonic() < deadline:
+                            cancel_check()
+                            time.sleep(min(0.05, deadline - time.monotonic()))
+                    else:
+                        time.sleep(delay)
 
 
 class WindowsClipboardBackend(BaseClipboardBackend):
@@ -356,7 +468,7 @@ class WindowsClipboardBackend(BaseClipboardBackend):
 
     def read_text(self) -> str:
         for _ in range(5):
-            if user32.OpenClipboard(0):
+            if user32.OpenClipboard(None):
                 break
             time.sleep(0.05)
         else:
@@ -392,7 +504,7 @@ class WindowsClipboardBackend(BaseClipboardBackend):
         kernel32.GlobalUnlock(h_mem)
 
         for _ in range(5):
-            if user32.OpenClipboard(0):
+            if user32.OpenClipboard(None):
                 break
             time.sleep(0.05)
         else:
@@ -409,7 +521,7 @@ class WindowsClipboardBackend(BaseClipboardBackend):
 
     def clear(self) -> None:
         for _ in range(5):
-            if user32.OpenClipboard(0):
+            if user32.OpenClipboard(None):
                 break
             time.sleep(0.05)
         else:
@@ -511,17 +623,15 @@ class WindowsWindowBackend(BaseWindowBackend):
 
         windows: list[dict[str, Any]] = []
 
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-
-        def enum_windows_callback(hwnd: wintypes.HWND, lparam: wintypes.LPARAM) -> bool:
+        def enum_windows_callback(hwnd: wintypes.HWND, lparam: int) -> bool:
             if not user32.IsWindowVisible(hwnd):
                 return True
             info = self._get_window_info(int(hwnd))
             windows.append(info)
             return True
 
-        cb = WNDENUMPROC(enum_windows_callback)
-        user32.EnumWindows(cb, 0)
+        callback = _WNDENUMPROC(enum_windows_callback)
+        user32.EnumWindows(callback, 0)
         hwnd = normalized_target.get("hwnd")
         hwnd_window = next(
             (window for window in windows if window.get("hwnd") == hwnd),
@@ -595,13 +705,13 @@ class WindowsWindowBackend(BaseWindowBackend):
         hwnd = win["hwnd"]
         if not user32.IsWindow(hwnd):
             return False
-        
+
         sw_flag = SW_RESTORE
         if state == "maximize":
             sw_flag = SW_MAXIMIZE
         elif state == "minimize":
             sw_flag = SW_MINIMIZE
-            
+
         user32.ShowWindow(hwnd, sw_flag)
         if state != "minimize":
             user32.SetForegroundWindow(hwnd)
